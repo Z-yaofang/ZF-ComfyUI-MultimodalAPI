@@ -1,0 +1,20 @@
+# Local credentials
+api_key.txt
+api_key_*.txt
+*-API.txt
+.env
+.env.*
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Python and test artifacts
+__pycache__/
+*.pyc
+.pytest_cache/
+tests/_temp_*
+
+# OS/editor artifacts
+.DS_Store
+Thumbs.db
