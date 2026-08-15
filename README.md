@@ -20,6 +20,20 @@ Video modes:
 - `sample_frames`: ffmpeg-extracted chronological frames; works with image-only vision APIs but contains no audio.
 - `ignore`: do not send the connected video.
 
+## Optional local llama.cpp node
+
+`ZF Local Multimodal Prompting (llama.cpp)` keeps a similar text/image
+interface but performs inference locally. It accepts `LLAMACPPMODEL`, optional
+`LLAMACPPARAMS`, and up to eight image inputs, then returns the same
+`response`/`raw_response` pair used by the API node.
+
+This is a thin adapter. Install
+[`ComfyUI-llama-cpp_vlm`](https://github.com/lihaoyun6/ComfyUI-llama-cpp_vlm)
+separately and use its model loader. No upstream source is copied or modified.
+Images are downscaled with their aspect ratio intact; they are not cropped,
+stretched, or letterboxed. Native video and audio understanding are not
+provided by this first local node.
+
 Native video fields vary across compatible gateways. If a service rejects `video_url` or `input_video`, use `sample_frames`.
 
 See [README_ZH.md](README_ZH.md) for full documentation.
@@ -40,7 +54,7 @@ Use the Python interpreter that starts ComfyUI when installing dependencies.
 
 ## Quick start
 
-1. Restart ComfyUI and add both nodes from `ZF/API`.
+1. Restart ComfyUI. API nodes are under `ZF/API`; the optional local node is under `ZF/Local`.
 2. Put the real key in this plugin's `api_key.txt`.
 3. Select the provider-compatible protocol, enter your own API base URL, and use the exact model name accepted by the server.
 4. Start with `video_mode=sample_frames`; use `native` only when the gateway explicitly supports Base64 video input.

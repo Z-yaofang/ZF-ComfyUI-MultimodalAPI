@@ -33,6 +33,24 @@
 - 保留 `role`、`prompt`、`model`、采样参数、`skip_error`。
 - 输出 `response` 和 `raw_response` 两路 `STRING`。
 
+### ZF 本地多模态反推（llama.cpp）
+
+- 不访问 API，不读取 Key，不发送提示词或图片到网络。
+- 输入一个 `LLAMACPPMODEL`，可选输入 `LLAMACPPARAMS`。
+- 保留与 API 节点接近的 `role`、`prompt`、采样参数、8 路图片和双文本输出。
+- 额外提供可选的 `video_frames`（视频抽帧后的 `IMAGE` 批次）和 `video_max_frames`。节点按时间均匀抽样，默认最多 8 帧，并在提示中标记为“仅视觉视频代理”。
+- 每张图片按照原始宽高比缩小到 `max_image_size` 以内，不裁剪、不拉伸，也不补黑边。
+- `force_offload` 开启后会在反推结束时卸载本地 VLM，适合随后运行占用较大的视频模型。
+- `raw_response` 是本地执行摘要；底层节点不提供服务端原始响应，因此它不是 API JSON。
+
+本地节点是一个薄适配层，实际模型加载和推理由
+[`ComfyUI-llama-cpp_vlm`](https://github.com/lihaoyun6/ComfyUI-llama-cpp_vlm)
+负责。请另外安装该插件，并将 GGUF 主模型与对应的 mmproj 放入
+`ComfyUI/models/LLM`。本插件没有复制或修改它的源码。
+
+当前版本支持文本和图片。视频需要先在工作流中抽帧并组成 `IMAGE`
+批次，再接入 `video_frames`；音频不在当前 llama.cpp VLM 节点的支持范围内。即使生成工作流另有音频输入，本地反推也不会声称听过该音轨。
+
 ## Key
 
 把 `api_key.txt.example` 复制为 `api_key.txt`，只在里面放一行 Key：
@@ -60,7 +78,7 @@ python -m pip install -r requirements.txt
 ## 快速使用
 
 1. 重启 ComfyUI。
-2. 在 `ZF/API` 分类添加 `ZF 多模态 API 配置` 与 `ZF 多模态反推（RH 接口兼容）`。
+2. API 节点位于 `ZF/API`；本地节点位于 `ZF/Local`。
 3. 在配置节点选择协议并填写你自己的 `api_base_url`。
 4. 将真实 Key 写入本插件目录的 `api_key.txt`，不要把 Key 填进工作流。
 5. 在反推节点填写服务端实际使用的模型名，并连接提示词、图片或视频。

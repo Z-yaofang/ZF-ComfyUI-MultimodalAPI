@@ -21,3 +21,13 @@ This plugin does not call or proxy the RunningHub service, does not depend on th
 At the time of this repository's publication, that project did not include a software license. No project-specific FOK source implementation is incorporated here. The OpenAI Chat Completions, OpenAI Responses, Anthropic Messages, and Gemini GenerateContent request formats in this plugin are independently implemented from their public protocol conventions.
 
 This project is not affiliated with, endorsed by, or sponsored by RunningHub or FOK API Tools.
+
+## ComfyUI-llama-cpp_vlm
+
+The optional `ZFLocalMultimodalLLM` node delegates local inference to the
+separately installed `llama_cpp_instruct_adv` ComfyUI node:
+
+- Project: https://github.com/lihaoyun6/ComfyUI-llama-cpp_vlm
+
+No source code, model weights, or Python packages from that project are
+bundled in this repository. Users install and update the backend separately.
