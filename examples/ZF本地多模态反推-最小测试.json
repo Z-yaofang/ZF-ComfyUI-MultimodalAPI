@@ -1,0 +1,553 @@
+{
+  "id": "e686f1b3-83e8-4a56-9fae-0246cbe72e80",
+  "revision": 0,
+  "last_node_id": 4,
+  "last_link_id": 3,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "llama_cpp_model_loader",
+      "pos": [
+        80,
+        80
+      ],
+      "size": [
+        520,
+        210
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "COMBO",
+          "widget": {
+            "name": "model"
+          },
+          "link": null
+        },
+        {
+          "name": "mmproj",
+          "type": "COMBO",
+          "widget": {
+            "name": "mmproj"
+          },
+          "link": null
+        },
+        {
+          "name": "chat_handler",
+          "type": "COMBO",
+          "widget": {
+            "name": "chat_handler"
+          },
+          "link": null
+        },
+        {
+          "name": "n_ctx",
+          "type": "INT",
+          "widget": {
+            "name": "n_ctx"
+          },
+          "link": null
+        },
+        {
+          "name": "vram_limit",
+          "type": "INT",
+          "widget": {
+            "name": "vram_limit"
+          },
+          "link": null
+        },
+        {
+          "name": "image_min_tokens",
+          "type": "INT",
+          "widget": {
+            "name": "image_min_tokens"
+          },
+          "link": null
+        },
+        {
+          "name": "image_max_tokens",
+          "type": "INT",
+          "widget": {
+            "name": "image_max_tokens"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "llama_model",
+          "type": "LLAMACPPMODEL",
+          "links": [
+            1
+          ]
+        }
+      ],
+      "title": "本地 Qwen3.5 VLM（默认 9B）",
+      "properties": {
+        "cnr_id": "llama-cpp_vllm",
+        "Node name for S&R": "llama_cpp_model_loader"
+      },
+      "widgets_values": [
+        "Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-Q8_0.gguf",
+        "mmproj-Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-BF16.gguf",
+        "Qwen3.5",
+        32768,
+        -1,
+        0,
+        0
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 2,
+      "type": "llama_cpp_parameters",
+      "pos": [
+        80,
+        340
+      ],
+      "size": [
+        300,
+        310
+      ],
+      "flags": {
+        "collapsed": true
+      },
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "max_tokens",
+          "type": "INT",
+          "widget": {
+            "name": "max_tokens"
+          },
+          "link": null
+        },
+        {
+          "name": "top_k",
+          "type": "INT",
+          "widget": {
+            "name": "top_k"
+          },
+          "link": null
+        },
+        {
+          "name": "top_p",
+          "type": "FLOAT",
+          "widget": {
+            "name": "top_p"
+          },
+          "link": null
+        },
+        {
+          "name": "min_p",
+          "type": "FLOAT",
+          "widget": {
+            "name": "min_p"
+          },
+          "link": null
+        },
+        {
+          "name": "typical_p",
+          "type": "FLOAT",
+          "widget": {
+            "name": "typical_p"
+          },
+          "link": null
+        },
+        {
+          "name": "temperature",
+          "type": "FLOAT",
+          "widget": {
+            "name": "temperature"
+          },
+          "link": null
+        },
+        {
+          "name": "repeat_penalty",
+          "type": "FLOAT",
+          "widget": {
+            "name": "repeat_penalty"
+          },
+          "link": null
+        },
+        {
+          "name": "frequency_penalty",
+          "type": "FLOAT",
+          "widget": {
+            "name": "frequency_penalty"
+          },
+          "link": null
+        },
+        {
+          "name": "present_penalty",
+          "type": "FLOAT",
+          "widget": {
+            "name": "present_penalty"
+          },
+          "link": null
+        },
+        {
+          "name": "mirostat_mode",
+          "type": "INT",
+          "widget": {
+            "name": "mirostat_mode"
+          },
+          "link": null
+        },
+        {
+          "name": "mirostat_eta",
+          "type": "FLOAT",
+          "widget": {
+            "name": "mirostat_eta"
+          },
+          "link": null
+        },
+        {
+          "name": "mirostat_tau",
+          "type": "FLOAT",
+          "widget": {
+            "name": "mirostat_tau"
+          },
+          "link": null
+        },
+        {
+          "name": "state_uid",
+          "type": "INT",
+          "widget": {
+            "name": "state_uid"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "parameters",
+          "type": "LLAMACPPARAMS",
+          "links": [
+            2
+          ]
+        }
+      ],
+      "title": "可选高级参数",
+      "properties": {
+        "cnr_id": "llama-cpp_vllm",
+        "Node name for S&R": "llama_cpp_parameters"
+      },
+      "widgets_values": [
+        4096,
+        20,
+        0.9,
+        0.05,
+        1,
+        0.15,
+        1.05,
+        0,
+        0,
+        0,
+        0.1,
+        5,
+        -1
+      ],
+      "color": "#223",
+      "bgcolor": "#335"
+    },
+    {
+      "id": 3,
+      "type": "LoadImage",
+      "pos": [
+        80,
+        510
+      ],
+      "size": [
+        300,
+        330
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "COMBO",
+          "widget": {
+            "name": "image"
+          },
+          "link": null
+        },
+        {
+          "name": "upload",
+          "type": "IMAGEUPLOAD",
+          "widget": {
+            "name": "upload"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            3
+          ]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "title": "选择一张测试图片",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "",
+        "image"
+      ],
+      "color": "#232",
+      "bgcolor": "#353"
+    },
+    {
+      "id": 4,
+      "type": "ZFLocalMultimodalLLM",
+      "pos": [
+        720,
+        80
+      ],
+      "size": [
+        620,
+        760
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "llama_model",
+          "type": "LLAMACPPMODEL",
+          "link": 1
+        },
+        {
+          "name": "role",
+          "type": "STRING",
+          "widget": {
+            "name": "role"
+          },
+          "link": null
+        },
+        {
+          "name": "prompt",
+          "type": "STRING",
+          "widget": {
+            "name": "prompt"
+          },
+          "link": null
+        },
+        {
+          "name": "temperature",
+          "type": "FLOAT",
+          "widget": {
+            "name": "temperature"
+          },
+          "link": null
+        },
+        {
+          "name": "max_tokens",
+          "type": "INT",
+          "widget": {
+            "name": "max_tokens"
+          },
+          "link": null
+        },
+        {
+          "name": "top_p",
+          "type": "FLOAT",
+          "widget": {
+            "name": "top_p"
+          },
+          "link": null
+        },
+        {
+          "name": "presence_penalty",
+          "type": "FLOAT",
+          "widget": {
+            "name": "presence_penalty"
+          },
+          "link": null
+        },
+        {
+          "name": "frequency_penalty",
+          "type": "FLOAT",
+          "widget": {
+            "name": "frequency_penalty"
+          },
+          "link": null
+        },
+        {
+          "name": "max_image_size",
+          "type": "INT",
+          "widget": {
+            "name": "max_image_size"
+          },
+          "link": null
+        },
+        {
+          "name": "seed",
+          "type": "INT",
+          "widget": {
+            "name": "seed"
+          },
+          "link": null
+        },
+        {
+          "name": "force_offload",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "force_offload"
+          },
+          "link": null
+        },
+        {
+          "name": "skip_error",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "skip_error"
+          },
+          "link": null
+        },
+        {
+          "name": "parameters",
+          "type": "LLAMACPPARAMS",
+          "shape": 7,
+          "link": 2
+        },
+        {
+          "name": "image1",
+          "type": "IMAGE",
+          "shape": 7,
+          "link": 3
+        },
+        {
+          "name": "image2",
+          "type": "IMAGE",
+          "shape": 7,
+          "link": null
+        },
+        {
+          "name": "image3",
+          "type": "IMAGE",
+          "shape": 7,
+          "link": null
+        },
+        {
+          "name": "image4",
+          "type": "IMAGE",
+          "shape": 7,
+          "link": null
+        },
+        {
+          "name": "image5",
+          "type": "IMAGE",
+          "shape": 7,
+          "link": null
+        },
+        {
+          "name": "image6",
+          "type": "IMAGE",
+          "shape": 7,
+          "link": null
+        },
+        {
+          "name": "image7",
+          "type": "IMAGE",
+          "shape": 7,
+          "link": null
+        },
+        {
+          "name": "image8",
+          "type": "IMAGE",
+          "shape": 7,
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "response",
+          "type": "STRING",
+          "links": []
+        },
+        {
+          "name": "raw_response",
+          "type": "STRING",
+          "links": []
+        }
+      ],
+      "title": "ZF 本地多模态反推（最小测试）",
+      "properties": {
+        "Node name for S&R": "ZFLocalMultimodalLLM"
+      },
+      "widgets_values": [
+        "You are a precise visual analyst. Describe only what is visible and distinguish facts from uncertainty.",
+        "Analyze <Picture 1>. Return a concise description of the subject, environment, composition, lighting, colors, visible text, and important continuity anchors.",
+        0.15,
+        4096,
+        0.9,
+        0,
+        0,
+        512,
+        42,
+        "fixed",
+        false,
+        false
+      ],
+      "color": "#223",
+      "bgcolor": "#335"
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      4,
+      0,
+      "LLAMACPPMODEL"
+    ],
+    [
+      2,
+      2,
+      0,
+      4,
+      12,
+      "LLAMACPPARAMS"
+    ],
+    [
+      3,
+      3,
+      0,
+      4,
+      13,
+      "IMAGE"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 1,
+      "offset": [
+        0,
+        0
+      ]
+    },
+    "frontendVersion": "1.28.7"
+  },
+  "version": 0.4
+}
