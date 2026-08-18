@@ -4,6 +4,8 @@
 
 它不是 RunningHub API 的转发器，也不依赖 `ComfyUI_RH_OpenAPI` 或 `comfyui-FOK_API_tools`。节点接口特意接近 `RHLLMChatNode`，方便迁移已有工作流，但请求逻辑是独立实现。
 
+本仓库保持为纯 API 插件，不再重复维护本地 llama.cpp 多模态写作节点。提示词导演台工作流需要的本地节点统一由 [ZF-ComfyUI-PromptDirector](https://github.com/Z-yaofang/ZF-ComfyUI-PromptDirector) 提供，避免两个插件出现功能相同但版本不同的节点。
+
 ## 节点
 
 ### ZF 多模态 API 配置
@@ -110,6 +112,8 @@ video_mode = sample_frames
 ## 范围
 
 本插件只实现多模态大模型反推所需的通用文本 API，不复制 RunningHub 的大量图像、视频、音频生成节点。
+
+需要本地 llama.cpp 反推时，请安装 `ZF-ComfyUI-PromptDirector` 并使用其中的“ZF 导演台本地多模态写作（llama.cpp）”；API 反推继续使用本仓库节点。两条路径可以在同一工作流中共存，但节点实现分别由各自仓库维护。
 
 本项目与 RunningHub、FOK API Tools 无隶属或官方合作关系。
 

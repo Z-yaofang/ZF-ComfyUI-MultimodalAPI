@@ -4,6 +4,8 @@ An independent, lightweight ComfyUI node set for sending text, up to eight image
 
 It does not call RunningHub and does not depend on `ComfyUI_RH_OpenAPI` or `comfyui-FOK_API_tools`. Its chat node intentionally resembles the `RHLLMChatNode` workflow interface to make migration straightforward, while the request implementation is original and provider-neutral.
 
+This repository intentionally stays API-only. The optional local llama.cpp multimodal writer used by the prompt-director workflow is maintained in [ZF-ComfyUI-PromptDirector](https://github.com/Z-yaofang/ZF-ComfyUI-PromptDirector), avoiding two competing copies of the same local adapter.
+
 Supported protocols:
 
 - OpenAI Chat Completions
