@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import wave
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -47,6 +48,8 @@ DEFAULT_CONFIG = {
     "video_max_mb": 10,
     "video_sample_frames": 8,
     "anthropic_version": "2023-06-01",
+    "audio_max_seconds": 180,
+    "audio_max_mb": 18,
 }
 
 
@@ -87,6 +90,8 @@ def _normalize_config(api_config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     config["video_max_seconds"] = max(1, min(int(config["video_max_seconds"]), 120))
     config["video_max_mb"] = max(1, min(int(config["video_max_mb"]), 200))
     config["video_sample_frames"] = max(1, min(int(config["video_sample_frames"]), 32))
+    config["audio_max_seconds"] = max(1, min(int(config["audio_max_seconds"]), 600))
+    config["audio_max_mb"] = max(1, min(int(config["audio_max_mb"]), 100))
     return config
 
 
@@ -193,10 +198,10 @@ def _existing_path(value: Any) -> Optional[Path]:
     return None
 
 
-def _copy_file_object(file_object: Any) -> Optional[Path]:
+def _copy_file_object(file_object: Any, suffix: str = ".mp4") -> Optional[Path]:
     if not hasattr(file_object, "read"):
         return None
-    handle = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+    handle = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
     try:
         if hasattr(file_object, "seek"):
             file_object.seek(0)
@@ -264,6 +269,50 @@ def _materialize_video(video: Any) -> Tuple[Path, bool]:
     raise RuntimeError("无法从 VIDEO 输入解析出可读取的视频文件。")
 
 
+def _waveform_audio_path(audio: Dict[str, Any]) -> Path:
+    waveform = audio.get("waveform")
+    sample_rate = int(audio.get("sample_rate") or 44100)
+    if waveform is None or not hasattr(waveform, "detach"):
+        raise RuntimeError("AUDIO 输入缺少 waveform 张量。")
+    samples = waveform.detach().cpu().float()
+    if samples.ndim == 3:
+        samples = samples[0]
+    elif samples.ndim == 1:
+        samples = samples.unsqueeze(0)
+    if samples.ndim != 2:
+        raise RuntimeError("AUDIO waveform 必须是 [batch, channels, samples] 或 [channels, samples]。")
+    pcm = samples.clamp(-1, 1).mul(32767).round().short().transpose(0, 1).contiguous().numpy()
+    output = _new_temp_path(".wav")
+    with wave.open(str(output), "wb") as writer:
+        writer.setnchannels(int(samples.shape[0]))
+        writer.setsampwidth(2)
+        writer.setframerate(sample_rate)
+        writer.writeframes(pcm.tobytes())
+    return output
+
+
+def _materialize_audio(audio: Any) -> Tuple[Path, bool]:
+    direct = _existing_path(audio)
+    if direct:
+        return direct, False
+    if isinstance(audio, dict):
+        for key in ("file_path", "path", "filename"):
+            direct = _existing_path(audio.get(key))
+            if direct:
+                return direct, False
+        if audio.get("waveform") is not None:
+            return _waveform_audio_path(audio), True
+    for attribute in ("path", "file"):
+        value = getattr(audio, attribute, None)
+        direct = _existing_path(value)
+        if direct:
+            return direct, False
+        copied = _copy_file_object(value, ".wav")
+        if copied:
+            return copied, True
+    raise RuntimeError("无法从 AUDIO 输入解析出可读取的音频。")
+
+
 def _video_duration(path: Path) -> Optional[float]:
     ffprobe = shutil.which("ffprobe")
     if not ffprobe:
@@ -285,6 +334,58 @@ def _video_duration(path: Path) -> Optional[float]:
         return float(completed.stdout.strip())
     except ValueError:
         return None
+
+
+def _audio_media(audio: Any, max_seconds: int, max_mb: int) -> Dict[str, str]:
+    source, source_owned = _materialize_audio(audio)
+    encoded: Optional[Path] = None
+    try:
+        ffmpeg = shutil.which("ffmpeg")
+        duration = _video_duration(source)
+        max_bytes = max_mb * 1024 * 1024
+        suffix = source.suffix.lower()
+        if ffmpeg:
+            encoded = _new_temp_path(".mp3")
+            _run_ffmpeg(
+                [
+                    ffmpeg,
+                    "-y",
+                    "-i",
+                    str(source),
+                    "-t",
+                    str(max_seconds),
+                    "-vn",
+                    "-ar",
+                    "44100",
+                    "-b:a",
+                    "128k",
+                    str(encoded),
+                ],
+                "音频压缩",
+            )
+            if encoded.stat().st_size > max_bytes:
+                raise RuntimeError(f"压缩后音频仍超过 {max_mb}MB。请缩短参考片段。")
+            payload_path = encoded
+            mime_type = "audio/mp3"
+            audio_format = "mp3"
+        elif suffix in {".wav", ".mp3"} and source.stat().st_size <= max_bytes and (duration is None or duration <= max_seconds):
+            payload_path = source
+            mime_type = "audio/wav" if suffix == ".wav" else "audio/mp3"
+            audio_format = suffix[1:]
+        else:
+            raise RuntimeError("音频需要压缩或转换，但系统找不到 ffmpeg。")
+        return {
+            "kind": "audio",
+            "label": "<Audio 1>",
+            "mime_type": mime_type,
+            "format": audio_format,
+            "data": base64.b64encode(payload_path.read_bytes()).decode("ascii"),
+        }
+    finally:
+        if encoded is not None:
+            encoded.unlink(missing_ok=True)
+        if source_owned:
+            source.unlink(missing_ok=True)
 
 
 def _run_ffmpeg(command: List[str], operation: str) -> None:
@@ -455,16 +556,24 @@ def _prepare_media(
     video_max_seconds: int,
     video_max_mb: int,
     video_sample_frames: int,
-) -> Tuple[List[Dict[str, str]], Optional[Dict[str, str]], str]:
+    audio: Any = None,
+    audio_max_seconds: int = 180,
+    audio_max_mb: int = 18,
+) -> Tuple[List[Dict[str, str]], Optional[Dict[str, str]], Optional[Dict[str, str]], str]:
     image_media = _collect_image_media(images)
     native_video = None
+    native_audio = None
     note = ""
+    if audio is not None:
+        if api_protocol == ANTHROPIC_MESSAGES:
+            raise ValueError("Anthropic Messages 当前不支持本节点的 AUDIO 输入；请改用 Gemini 或支持音频的 OpenAI 模型。")
+        native_audio = _audio_media(audio, audio_max_seconds, audio_max_mb)
     if video is None:
-        return image_media, native_video, note
+        return image_media, native_video, native_audio, note
 
     resolved_mode = _resolved_video_mode(api_protocol, video_mode)
     if resolved_mode == "ignore":
-        return image_media, native_video, "Connected video was intentionally ignored by video_mode=ignore."
+        return image_media, native_video, native_audio, "Connected video was intentionally ignored by video_mode=ignore."
     if resolved_mode == "sample_frames":
         sampled_frames = _sample_video_media(video, video_max_seconds, video_sample_frames)
         image_media.extend(sampled_frames)
@@ -472,11 +581,11 @@ def _prepare_media(
             "The connected video is represented by chronological sampled frames. "
             "Frame sampling does not include the video's audio track."
         )
-        return image_media, native_video, note
+        return image_media, native_video, native_audio, note
     if api_protocol == ANTHROPIC_MESSAGES:
         raise ValueError("Anthropic Messages 不支持本节点的原生视频格式；请使用 auto 或 sample_frames。")
     native_video = _native_video_media(video, video_max_seconds, video_max_mb)
-    return image_media, native_video, note
+    return image_media, native_video, native_audio, note
 
 
 def _data_uri(media: Dict[str, str]) -> str:
@@ -489,11 +598,12 @@ def _openai_chat_payload(
     prompt: str,
     images: List[Dict[str, str]],
     video: Optional[Dict[str, str]],
+    audio: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     messages: List[Dict[str, Any]] = []
     if role.strip():
         messages.append({"role": "system", "content": role})
-    if not images and video is None:
+    if not images and video is None and audio is None:
         messages.append({"role": "user", "content": prompt})
         return {"model": model, "messages": messages}
 
@@ -504,6 +614,9 @@ def _openai_chat_payload(
     if video is not None:
         content.append({"type": "text", "text": video["label"]})
         content.append({"type": "video_url", "video_url": {"url": _data_uri(video)}})
+    if audio is not None:
+        content.append({"type": "text", "text": audio["label"]})
+        content.append({"type": "input_audio", "input_audio": {"data": audio["data"], "format": audio["format"]}})
     messages.append({"role": "user", "content": content})
     return {"model": model, "messages": messages}
 
@@ -514,6 +627,7 @@ def _openai_responses_payload(
     prompt: str,
     images: List[Dict[str, str]],
     video: Optional[Dict[str, str]],
+    audio: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     content: List[Dict[str, Any]] = [{"type": "input_text", "text": prompt}]
     for image in images:
@@ -522,6 +636,9 @@ def _openai_responses_payload(
     if video is not None:
         content.append({"type": "input_text", "text": video["label"]})
         content.append({"type": "input_video", "video_url": _data_uri(video)})
+    if audio is not None:
+        content.append({"type": "input_text", "text": audio["label"]})
+        content.append({"type": "input_audio", "input_audio": {"data": audio["data"], "format": audio["format"]}})
     payload: Dict[str, Any] = {"model": model, "input": [{"role": "user", "content": content}]}
     if role.strip():
         payload["instructions"] = role
@@ -558,6 +675,7 @@ def _gemini_payload(
     prompt: str,
     images: List[Dict[str, str]],
     video: Optional[Dict[str, str]],
+    audio: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     parts: List[Dict[str, Any]] = [{"text": prompt}]
     for image in images:
@@ -566,6 +684,9 @@ def _gemini_payload(
     if video is not None:
         parts.append({"text": video["label"]})
         parts.append({"inline_data": {"mime_type": video["mime_type"], "data": video["data"]}})
+    if audio is not None:
+        parts.append({"text": audio["label"]})
+        parts.append({"inline_data": {"mime_type": audio["mime_type"], "data": audio["data"]}})
     payload: Dict[str, Any] = {"contents": [{"role": "user", "parts": parts}]}
     if role.strip():
         payload["systemInstruction"] = {"parts": [{"text": role}]}
@@ -639,6 +760,7 @@ def _build_request(
     prompt: str,
     images: List[Dict[str, str]],
     video: Optional[Dict[str, str]],
+    audio: Optional[Dict[str, str]],
     temperature: float,
     max_tokens: int,
     top_p: float,
@@ -653,13 +775,13 @@ def _build_request(
     headers = _headers(protocol, api_key, config["anthropic_version"])
 
     if protocol == OPENAI_CHAT:
-        payload = _openai_chat_payload(model, role, prompt, images, video)
+        payload = _openai_chat_payload(model, role, prompt, images, video, audio)
     elif protocol == OPENAI_RESPONSES:
-        payload = _openai_responses_payload(model, role, prompt, images, video)
+        payload = _openai_responses_payload(model, role, prompt, images, video, audio)
     elif protocol == ANTHROPIC_MESSAGES:
         payload = _anthropic_payload(model, role, prompt, images)
     else:
-        payload = _gemini_payload(role, prompt, images, video)
+        payload = _gemini_payload(role, prompt, images, video, audio)
 
     _apply_generation_parameters(
         payload,
@@ -820,6 +942,26 @@ class ZFMultimodalAPIConfig:
                     "STRING",
                     {"default": "2023-06-01", "multiline": False},
                 ),
+                "audio_max_seconds": (
+                    "INT",
+                    {
+                        "default": 180,
+                        "min": 1,
+                        "max": 600,
+                        "step": 1,
+                        "tooltip": "参考音频只发送开头这段时长；音乐分析通常建议 60–180 秒。",
+                    },
+                ),
+                "audio_max_mb": (
+                    "INT",
+                    {
+                        "default": 18,
+                        "min": 1,
+                        "max": 100,
+                        "step": 1,
+                        "tooltip": "内联音频大小上限；Gemini 官方内联请求总大小上限为 20MB，默认预留提示词空间。",
+                    },
+                ),
             }
         }
 
@@ -840,6 +982,8 @@ class ZFMultimodalAPIConfig:
         video_max_mb: int,
         video_sample_frames: int,
         anthropic_version: str,
+        audio_max_seconds: int = 180,
+        audio_max_mb: int = 18,
     ):
         return (
             _normalize_config(
@@ -854,6 +998,8 @@ class ZFMultimodalAPIConfig:
                     "video_max_mb": video_max_mb,
                     "video_sample_frames": video_sample_frames,
                     "anthropic_version": anthropic_version,
+                    "audio_max_seconds": audio_max_seconds,
+                    "audio_max_mb": audio_max_mb,
                 }
             ),
         )
@@ -861,7 +1007,7 @@ class ZFMultimodalAPIConfig:
 
 class ZFMultimodalLLM:
     DESCRIPTION = (
-        "面向现有 RH LLM 反推工作流的独立实现：支持 8 路图片、1 路视频、自定义 API 和双文本输出。"
+        "面向现有 RH LLM 反推工作流的独立实现：支持 8 路图片、1 路视频、1 路音频、自定义 API 和双文本输出。"
     )
     RETURN_TYPES = ("STRING", "STRING")
     RETURN_NAMES = ("response", "raw_response")
@@ -934,6 +1080,7 @@ class ZFMultimodalLLM:
                 "image8": ("IMAGE",),
                 "video": ("VIDEO",),
                 "api_config": ("ZF_MULTIMODAL_API_CONFIG",),
+                "audio": ("AUDIO",),
             },
         }
 
@@ -965,6 +1112,7 @@ class ZFMultimodalLLM:
         image8=None,
         video=None,
         api_config=None,
+        audio=None,
     ):
         try:
             config = _normalize_config(api_config)
@@ -976,7 +1124,7 @@ class ZFMultimodalLLM:
                 for image in (image1, image2, image3, image4, image5, image6, image7, image8)
                 if image is not None
             ]
-            image_media, video_media, media_note = _prepare_media(
+            image_media, video_media, audio_media, media_note = _prepare_media(
                 config["api_protocol"],
                 images,
                 video,
@@ -984,6 +1132,9 @@ class ZFMultimodalLLM:
                 config["video_max_seconds"],
                 config["video_max_mb"],
                 config["video_sample_frames"],
+                audio,
+                config["audio_max_seconds"],
+                config["audio_max_mb"],
             )
             effective_prompt = prompt or ""
             if media_note:
@@ -996,6 +1147,7 @@ class ZFMultimodalLLM:
                 effective_prompt,
                 image_media,
                 video_media,
+                audio_media,
                 temperature,
                 max_tokens,
                 top_p,
@@ -1005,11 +1157,12 @@ class ZFMultimodalLLM:
                 seed,
             )
             log.info(
-                "ZF multimodal API request: protocol=%s model=%s images=%d video=%s endpoint=%s",
+                "ZF multimodal API request: protocol=%s model=%s images=%d video=%s audio=%s endpoint=%s",
                 config["api_protocol"],
                 model,
                 len(image_media),
                 video_media is not None,
+                audio_media is not None,
                 url,
             )
             data = _post_json(url, headers, payload, config["timeout"])

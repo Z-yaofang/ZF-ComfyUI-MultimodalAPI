@@ -1,6 +1,6 @@
 # ZF-ComfyUI-MultimodalAPI
 
-一个独立、轻量的 ComfyUI 多模态文本 API 插件，用于把现有的图片/视频反推工作流接到你自己的 API。
+一个独立、轻量的 ComfyUI 多模态文本 API 插件，用于把现有的图片、视频和音频反推工作流接到你自己的 API。
 
 它不是 RunningHub API 的转发器，也不依赖 `ComfyUI_RH_OpenAPI` 或 `comfyui-FOK_API_tools`。节点接口特意接近 `RHLLMChatNode`，方便迁移已有工作流，但请求逻辑是独立实现。
 
@@ -26,11 +26,14 @@
   - `native`：发送 Base64 原生视频，可保留视频内音频，但服务端必须支持对应视频字段。
   - `sample_frames`：本地用 ffmpeg 抽取时间顺序帧，兼容只支持图片的视觉模型，但不包含音频。
   - `ignore`：忽略连接的视频。
+- `audio_max_seconds`：最多发送参考音频开头多少秒，默认 180 秒。
+- `audio_max_mb`：压缩后内联音频的大小上限，默认 18MB，为 Gemini 的 20MB 请求上限预留提示词空间。
 
 ### ZF 多模态反推（RH 接口兼容）
 
 - 最多 8 路 `IMAGE`。
 - 1 路 `VIDEO`。
+- 1 路 `AUDIO`；标准 ComfyUI `LoadAudio` 可直接连接。
 - 图片和视频可以同时发送，不会像当前 RH 节点那样在有图片时忽略视频。
 - 保留 `role`、`prompt`、`model`、采样参数、`skip_error`。
 - 输出 `response` 和 `raw_response` 两路 `STRING`。
@@ -65,7 +68,9 @@ python -m pip install -r requirements.txt
 2. 在 `ZF/API` 分类添加 `ZF 多模态 API 配置` 与 `ZF 多模态反推（RH 接口兼容）`。
 3. 在配置节点选择协议并填写你自己的 `api_base_url`。
 4. 将真实 Key 写入本插件目录的 `api_key.txt`，不要把 Key 填进工作流。
-5. 在反推节点填写服务端实际使用的模型名，并连接提示词、图片或视频。
+5. 在反推节点填写服务端实际使用的模型名，并连接提示词、图片、视频或音频。
+
+音频会在本地截断并压缩为 MP3 后以内联 Base64 发送。Gemini GenerateContent、OpenAI Chat Completions 和 OpenAI Responses 使用各自的原生音频字段；Anthropic Messages 当前不支持本节点的 `AUDIO` 输入。模型本身也必须具备音频理解能力，仅使用普通文本/视觉模型会被服务端拒绝。
 
 常见 OpenAI 兼容接口可先使用：
 

@@ -1,6 +1,6 @@
 # ZF-ComfyUI-MultimodalAPI
 
-An independent, lightweight ComfyUI node set for sending text, up to eight image inputs, and one video input to a user-configured multimodal API.
+An independent, lightweight ComfyUI node set for sending text, up to eight image inputs, one video input, and one audio input to a user-configured multimodal API.
 
 It does not call RunningHub and does not depend on `ComfyUI_RH_OpenAPI` or `comfyui-FOK_API_tools`. Its chat node intentionally resembles the `RHLLMChatNode` workflow interface to make migration straightforward, while the request implementation is original and provider-neutral.
 
@@ -21,6 +21,8 @@ Video modes:
 - `native`: Base64 video; preserves embedded audio when the API accepts it.
 - `sample_frames`: ffmpeg-extracted chronological frames; works with image-only vision APIs but contains no audio.
 - `ignore`: do not send the connected video.
+
+The optional standard ComfyUI `AUDIO` input is clipped and compressed locally before inline Base64 upload. Gemini GenerateContent, OpenAI Chat Completions, and OpenAI Responses use their native audio content fields. Anthropic Messages does not accept this node's audio input. The selected remote model must support audio understanding.
 
 Native video fields vary across compatible gateways. If a service rejects `video_url` or `input_video`, use `sample_frames`.
 
