@@ -19,6 +19,10 @@ def config_inputs():
         ("video_max_mb", "INT"),
         ("video_sample_frames", "INT"),
         ("anthropic_version", "STRING"),
+        ("audio_max_seconds", "INT"),
+        ("audio_max_mb", "INT"),
+        ("audio_mode", "COMBO"),
+        ("request_max_mb", "INT"),
     ]
     return [
         {
@@ -44,7 +48,7 @@ def migrate_workflow(data):
 
     for node in config_nodes:
         node["type"] = "ZFMultimodalAPIConfig"
-        node["size"] = [410, 330]
+        node["size"] = [410, 430]
         node["inputs"] = config_inputs()
         node["outputs"] = [
             {
@@ -64,6 +68,10 @@ def migrate_workflow(data):
             10,
             8,
             "2023-06-01",
+            180,
+            18,
+            "native",
+            64,
         ]
         properties = node.setdefault("properties", {})
         properties["aux_id"] = PLUGIN_ID

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import importlib.util
 import json
 import logging
 import os
@@ -11,6 +12,7 @@ import tempfile
 import time
 import wave
 from io import BytesIO
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -31,6 +33,7 @@ OPENAI_RESPONSES = "openai_responses"
 ANTHROPIC_MESSAGES = "anthropic_messages"
 GEMINI_GENERATE_CONTENT = "gemini_generatecontent"
 API_PROTOCOLS = [OPENAI_CHAT, OPENAI_RESPONSES, ANTHROPIC_MESSAGES, GEMINI_GENERATE_CONTENT]
+RH_BASE_URLS = {"cn": "https://llm.runninghub.cn/v1", "ai": "https://llm.runninghub.ai/v1"}
 
 VIDEO_MODES = ["auto", "native", "sample_frames", "ignore"]
 PARAMETER_MODES = ["auto", "full", "minimal"]
@@ -50,7 +53,18 @@ DEFAULT_CONFIG = {
     "anthropic_version": "2023-06-01",
     "audio_max_seconds": 180,
     "audio_max_mb": 18,
+    "audio_mode": "native",
+    "request_max_mb": 64,
 }
+
+
+@lru_cache(maxsize=1)
+def _media_processor():
+    # Also supports tools/tests loading this module directly by filesystem path.
+    spec = importlib.util.spec_from_file_location("zf_api_media_processing", NODE_DIR / "media_processing.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _safe_key_path(api_key_file: str) -> Optional[Path]:
@@ -80,19 +94,53 @@ def _normalize_config(api_config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     config = dict(DEFAULT_CONFIG)
     if api_config:
         config.update(api_config)
+    if config.get("provider") == "runninghub":
+        region = config.get("endpoint_region", "cn")
+        if region not in RH_BASE_URLS:
+            raise ValueError("RH endpoint_region 必须是 cn 或 ai。")
+        if config.get("auth_source", "rh_cloud") not in ("rh_cloud", "rh_env"):
+            raise ValueError("RH auth_source 必须是 rh_cloud 或 rh_env。")
+        # Shared platform credentials must never follow an arbitrary URL or protocol.
+        config.update(api_protocol=OPENAI_CHAT, api_base_url=RH_BASE_URLS[region],
+                      api_key_file="", audio_mode="ignore", parameter_mode="auto",
+                      video_max_seconds=15, video_max_mb=10)
+        if config["video_mode"] == "auto":
+            config["video_mode"] = "sample_frames"
     if config["api_protocol"] not in API_PROTOCOLS:
         raise ValueError(f"不支持的 api_protocol：{config['api_protocol']}")
     if config["video_mode"] not in VIDEO_MODES:
         raise ValueError(f"不支持的 video_mode：{config['video_mode']}")
     if config["parameter_mode"] not in PARAMETER_MODES:
         raise ValueError(f"不支持的 parameter_mode：{config['parameter_mode']}")
+    if config["audio_mode"] not in ("native", "ignore"):
+        raise ValueError(f"不支持的 audio_mode：{config['audio_mode']}")
     config["timeout"] = max(10, min(int(config["timeout"]), 900))
     config["video_max_seconds"] = max(1, min(int(config["video_max_seconds"]), 120))
     config["video_max_mb"] = max(1, min(int(config["video_max_mb"]), 200))
     config["video_sample_frames"] = max(1, min(int(config["video_sample_frames"]), 32))
     config["audio_max_seconds"] = max(1, min(int(config["audio_max_seconds"]), 600))
     config["audio_max_mb"] = max(1, min(int(config["audio_max_mb"]), 100))
+    config["request_max_mb"] = max(1, min(int(config["request_max_mb"]), 512))
     return config
+
+
+def _runninghub_key(auth_source: str) -> str:
+    if auth_source == "rh_env":
+        key = os.environ.get("RH_API_KEY", "")
+        missing = "未配置 RH_API_KEY 环境变量；本地 RH 模式需使用有 LLM API 权限的 Key。"
+    elif auth_source == "rh_cloud":
+        try:
+            from server import PromptServer
+        except ImportError:
+            key = ""
+        else:
+            key = getattr(getattr(PromptServer, "instance", None), "shared_api_key", "")
+        missing = "未获得 RH 云端系统凭据；请在 RH 云端运行并让客服确认插件可读取 shared_api_key。不会改用本地 TXT 或其他账户。"
+    else:
+        raise ValueError("RH auth_source 必须是 rh_cloud 或 rh_env。")
+    if not isinstance(key, str) or not key.strip() or key.strip().lower() == "unknown":
+        raise RuntimeError(missing)
+    return key.strip()
 
 
 def _endpoint(api_protocol: str, api_base_url: str, model: str) -> str:
@@ -436,7 +484,11 @@ def _fit_video(path: Path, max_seconds: int, max_bytes: int) -> Tuple[Path, bool
         "+faststart",
         str(output),
     ]
-    _run_ffmpeg(command, "视频压缩")
+    try:
+        _run_ffmpeg(command, "视频压缩")
+    except Exception:
+        output.unlink(missing_ok=True)
+        raise
     if output.stat().st_size <= max_bytes:
         return output, True
 
@@ -466,6 +518,9 @@ def _fit_video(path: Path, max_seconds: int, max_bytes: int) -> Tuple[Path, bool
     ]
     try:
         _run_ffmpeg(retry_command, "二次视频压缩")
+    except Exception:
+        smaller.unlink(missing_ok=True)
+        raise
     finally:
         output.unlink(missing_ok=True)
     if smaller.stat().st_size > max_bytes:
@@ -592,18 +647,31 @@ def _data_uri(media: Dict[str, str]) -> str:
     return f"data:{media['mime_type']};base64,{media['data']}"
 
 
+def _payload_media_items(media: Any, kind: str) -> List[Dict[str, str]]:
+    """Normalize legacy single media and multi-media inputs without relabeling."""
+    if media is None:
+        return []
+    if isinstance(media, dict):
+        return [media]
+    if isinstance(media, (list, tuple)) and all(isinstance(item, dict) for item in media):
+        return list(media)
+    raise ValueError(f"{kind} 请求素材必须是单个素材字典或素材字典列表。")
+
+
 def _openai_chat_payload(
     model: str,
     role: str,
     prompt: str,
     images: List[Dict[str, str]],
-    video: Optional[Dict[str, str]],
-    audio: Optional[Dict[str, str]] = None,
+    video: Any,
+    audio: Any = None,
 ) -> Dict[str, Any]:
+    videos = _payload_media_items(video, "视频")
+    audios = _payload_media_items(audio, "音频")
     messages: List[Dict[str, Any]] = []
     if role.strip():
         messages.append({"role": "system", "content": role})
-    if not images and video is None and audio is None:
+    if not images and not videos and not audios:
         messages.append({"role": "user", "content": prompt})
         return {"model": model, "messages": messages}
 
@@ -611,12 +679,12 @@ def _openai_chat_payload(
     for image in images:
         content.append({"type": "text", "text": image["label"]})
         content.append({"type": "image_url", "image_url": {"url": _data_uri(image)}})
-    if video is not None:
-        content.append({"type": "text", "text": video["label"]})
-        content.append({"type": "video_url", "video_url": {"url": _data_uri(video)}})
-    if audio is not None:
-        content.append({"type": "text", "text": audio["label"]})
-        content.append({"type": "input_audio", "input_audio": {"data": audio["data"], "format": audio["format"]}})
+    for item in videos:
+        content.append({"type": "text", "text": item["label"]})
+        content.append({"type": "video_url", "video_url": {"url": _data_uri(item)}})
+    for item in audios:
+        content.append({"type": "text", "text": item["label"]})
+        content.append({"type": "input_audio", "input_audio": {"data": item["data"], "format": item["format"]}})
     messages.append({"role": "user", "content": content})
     return {"model": model, "messages": messages}
 
@@ -626,19 +694,19 @@ def _openai_responses_payload(
     role: str,
     prompt: str,
     images: List[Dict[str, str]],
-    video: Optional[Dict[str, str]],
-    audio: Optional[Dict[str, str]] = None,
+    video: Any,
+    audio: Any = None,
 ) -> Dict[str, Any]:
     content: List[Dict[str, Any]] = [{"type": "input_text", "text": prompt}]
     for image in images:
         content.append({"type": "input_text", "text": image["label"]})
         content.append({"type": "input_image", "image_url": _data_uri(image)})
-    if video is not None:
-        content.append({"type": "input_text", "text": video["label"]})
-        content.append({"type": "input_video", "video_url": _data_uri(video)})
-    if audio is not None:
-        content.append({"type": "input_text", "text": audio["label"]})
-        content.append({"type": "input_audio", "input_audio": {"data": audio["data"], "format": audio["format"]}})
+    for item in _payload_media_items(video, "视频"):
+        content.append({"type": "input_text", "text": item["label"]})
+        content.append({"type": "input_video", "video_url": _data_uri(item)})
+    for item in _payload_media_items(audio, "音频"):
+        content.append({"type": "input_text", "text": item["label"]})
+        content.append({"type": "input_audio", "input_audio": {"data": item["data"], "format": item["format"]}})
     payload: Dict[str, Any] = {"model": model, "input": [{"role": "user", "content": content}]}
     if role.strip():
         payload["instructions"] = role
@@ -650,7 +718,13 @@ def _anthropic_payload(
     role: str,
     prompt: str,
     images: List[Dict[str, str]],
+    video: Any = None,
+    audio: Any = None,
 ) -> Dict[str, Any]:
+    if _payload_media_items(video, "视频"):
+        raise ValueError("Anthropic Messages 不支持原生视频输入，请使用 sample_frames 视频抽帧模式。")
+    if _payload_media_items(audio, "音频"):
+        raise ValueError("Anthropic Messages 不支持音频输入，请使用支持音频的接口或移除音频素材。")
     content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
     for image in images:
         content.append({"type": "text", "text": image["label"]})
@@ -674,19 +748,19 @@ def _gemini_payload(
     role: str,
     prompt: str,
     images: List[Dict[str, str]],
-    video: Optional[Dict[str, str]],
-    audio: Optional[Dict[str, str]] = None,
+    video: Any,
+    audio: Any = None,
 ) -> Dict[str, Any]:
     parts: List[Dict[str, Any]] = [{"text": prompt}]
     for image in images:
         parts.append({"text": image["label"]})
         parts.append({"inline_data": {"mime_type": image["mime_type"], "data": image["data"]}})
-    if video is not None:
-        parts.append({"text": video["label"]})
-        parts.append({"inline_data": {"mime_type": video["mime_type"], "data": video["data"]}})
-    if audio is not None:
-        parts.append({"text": audio["label"]})
-        parts.append({"inline_data": {"mime_type": audio["mime_type"], "data": audio["data"]}})
+    for item in _payload_media_items(video, "视频"):
+        parts.append({"text": item["label"]})
+        parts.append({"inline_data": {"mime_type": item["mime_type"], "data": item["data"]}})
+    for item in _payload_media_items(audio, "音频"):
+        parts.append({"text": item["label"]})
+        parts.append({"inline_data": {"mime_type": item["mime_type"], "data": item["data"]}})
     payload: Dict[str, Any] = {"contents": [{"role": "user", "parts": parts}]}
     if role.strip():
         payload["systemInstruction"] = {"parts": [{"text": role}]}
@@ -769,8 +843,16 @@ def _build_request(
     reasoning_effort: str,
     seed: int,
 ) -> Tuple[str, Dict[str, str], Dict[str, Any]]:
+    is_rh = config.get("provider") == "runninghub"
+    if is_rh:
+        config = _normalize_config(config)
+        videos = _payload_media_items(video, "video")
+        if videos and (images or len(videos) > 1):
+            raise ValueError("RH native 模式仅用于单视频且不混接图片；图片与视频、多视频请用 sample_frames。")
+        if _payload_media_items(audio, "audio"):
+            raise ValueError("RH 模式不发送独立音频；请使用 RH 配置节点的显式忽略音频策略。")
     protocol = config["api_protocol"]
-    api_key = _read_api_key(config["api_key_file"])
+    api_key = _runninghub_key(config.get("auth_source", "rh_cloud")) if is_rh else _read_api_key(config["api_key_file"])
     url = _endpoint(protocol, config["api_base_url"], model)
     headers = _headers(protocol, api_key, config["anthropic_version"])
 
@@ -779,7 +861,7 @@ def _build_request(
     elif protocol == OPENAI_RESPONSES:
         payload = _openai_responses_payload(model, role, prompt, images, video, audio)
     elif protocol == ANTHROPIC_MESSAGES:
-        payload = _anthropic_payload(model, role, prompt, images)
+        payload = _anthropic_payload(model, role, prompt, images, video, audio)
     else:
         payload = _gemini_payload(role, prompt, images, video, audio)
 
@@ -795,33 +877,40 @@ def _build_request(
         reasoning_effort,
         seed,
     )
+    if is_rh:
+        payload.pop("seed", None)
     return url, headers, payload
 
 
-def _post_json(url: str, headers: Dict[str, str], payload: Dict[str, Any], timeout: int) -> Dict[str, Any]:
+def _post_json(url: str, headers: Dict[str, str], payload: Dict[str, Any], timeout: int,
+               allow_redirects: bool = True) -> Dict[str, Any]:
+    secrets = _header_secrets(headers)
     last_error: Optional[Exception] = None
     for attempt in range(MAX_RETRIES):
         if attempt:
             time.sleep(min(2 ** attempt, 5))
         try:
-            response = requests.post(url, headers=headers, json=payload, timeout=timeout)
+            response = requests.post(url, headers=headers, json=payload, timeout=timeout,
+                                     allow_redirects=allow_redirects)
         except requests.RequestException as exc:
             last_error = exc
             if attempt + 1 < MAX_RETRIES:
                 continue
-            raise RuntimeError(f"API 请求失败：{exc}") from exc
+            raise RuntimeError(f"API 请求失败：{_redact_text(str(exc), secrets)}") from None
 
         if response.status_code in RETRY_STATUS_CODES and attempt + 1 < MAX_RETRIES:
             last_error = RuntimeError(f"HTTP {response.status_code}")
             continue
+        if not allow_redirects and 300 <= response.status_code < 400:
+            raise RuntimeError("RH 接口返回重定向，已停止请求以保护系统凭据；请检查官方服务状态。")
         if not response.ok:
-            detail = _redact_text(response.text[:1200])
+            detail = _redact_text(response.text, secrets)[:1200]
             raise RuntimeError(f"HTTP {response.status_code}：{detail}")
         try:
             return response.json()
         except ValueError as exc:
-            raise RuntimeError(f"API 返回的不是有效 JSON：{_redact_text(response.text[:500])}") from exc
-    raise RuntimeError(f"API 请求失败：{last_error}")
+            raise RuntimeError(f"API 返回的不是有效 JSON：{_redact_text(response.text, secrets)[:500]}") from None
+    raise RuntimeError(f"API 请求失败：{_redact_text(str(last_error), secrets)}")
 
 
 def _content_text(content: Any) -> str:
@@ -878,15 +967,28 @@ def _clean_text(text: str) -> str:
     return cleaned.strip()
 
 
-def _redact_text(text: str) -> str:
+def _header_secrets(headers: Dict[str, str]) -> Tuple[str, ...]:
+    values = []
+    for name, value in headers.items():
+        if name.lower() == "authorization":
+            values.append(value.removeprefix("Bearer "))
+        elif name.lower() in ("x-api-key", "x-goog-api-key"):
+            values.append(value)
+    return tuple(value for value in values if value)
+
+
+def _redact_text(text: str, secrets: Iterable[str] = ()) -> str:
+    for secret in secrets:
+        if secret:
+            text = text.replace(secret, "***").replace(json.dumps(secret)[1:-1], "***")
     text = re.sub(r"data:[^;,\s]+;base64,[A-Za-z0-9+/=_-]+", "<base64 media omitted>", text)
     text = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+", r"\1***", text)
     return text
 
 
-def _safe_raw_response(data: Dict[str, Any]) -> str:
+def _safe_raw_response(data: Dict[str, Any], secrets: Iterable[str] = ()) -> str:
     raw = json.dumps(data, ensure_ascii=False, indent=2)
-    return _redact_text(raw)
+    return _redact_text(raw, secrets)
 
 
 class ZFMultimodalAPIConfig:
@@ -962,7 +1064,18 @@ class ZFMultimodalAPIConfig:
                         "tooltip": "内联音频大小上限；Gemini 官方内联请求总大小上限为 20MB，默认预留提示词空间。",
                     },
                 ),
-            }
+            },
+            "optional": {
+                # Append only: saved workflows keep the original widget order.
+                "audio_mode": (["native", "ignore"], {
+                    "default": "native",
+                    "tooltip": "native发送所有已接音频；ignore明确不听取独立音频，适合不支持音频的视觉模型。",
+                }),
+                "request_max_mb": ("INT", {
+                    "default": 64, "min": 1, "max": 512,
+                    "tooltip": "整个JSON请求含Base64媒体的大小上限；按服务商实际限制设置。",
+                }),
+            },
         }
 
     RETURN_TYPES = ("ZF_MULTIMODAL_API_CONFIG",)
@@ -984,6 +1097,8 @@ class ZFMultimodalAPIConfig:
         anthropic_version: str,
         audio_max_seconds: int = 180,
         audio_max_mb: int = 18,
+        audio_mode: str = "native",
+        request_max_mb: int = 64,
     ):
         return (
             _normalize_config(
@@ -1000,14 +1115,52 @@ class ZFMultimodalAPIConfig:
                     "anthropic_version": anthropic_version,
                     "audio_max_seconds": audio_max_seconds,
                     "audio_max_mb": audio_max_mb,
+                    "audio_mode": audio_mode,
+                    "request_max_mb": request_max_mb,
                 }
             ),
         )
 
 
+class ZFRunningHubAPIConfig:
+    DESCRIPTION = (
+        "RH 云端默认使用平台系统凭据，无需 TXT 或填写 Key；本地可显式选择 RH_API_KEY 环境变量。"
+        "视频默认抽帧后与图片一起发送；独立音频明确忽略，不会被听取。"
+        "原生视频仅用于单视频且无图片；实际模型支持与账户结算需在 RH 验证。"
+    )
+    RETURN_TYPES = ("ZF_MULTIMODAL_API_CONFIG",)
+    RETURN_NAMES = ("api_config",)
+    FUNCTION = "build"
+    CATEGORY = "ZF/API"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "auth_source": (["rh_cloud", "rh_env"], {
+                "default": "rh_cloud", "tooltip": "rh_cloud 只用 RH 平台凭据；rh_env 只用环境变量 RH_API_KEY，不会自动更换账户。",
+            }),
+            "endpoint_region": (["cn", "ai"], {"default": "cn"}),
+            "timeout": ("INT", {"default": 300, "min": 10, "max": 900, "step": 10}),
+            "video_mode": (["sample_frames", "native", "ignore"], {
+                "default": "sample_frames", "tooltip": "抽帧可与图片一起分析；native 仅单视频且不混图片。独立 AUDIO 在 RH 模式下不发送。",
+            }),
+            "video_sample_frames": ("INT", {"default": 8, "min": 1, "max": 32}),
+            "request_max_mb": ("INT", {"default": 64, "min": 1, "max": 512}),
+        }}
+
+    def build(self, auth_source="rh_cloud", endpoint_region="cn", timeout=300,
+              video_mode="sample_frames", video_sample_frames=8, request_max_mb=64):
+        return (_normalize_config({
+            "provider": "runninghub", "auth_source": auth_source,
+            "endpoint_region": endpoint_region, "timeout": timeout,
+            "video_mode": video_mode, "video_sample_frames": video_sample_frames,
+            "request_max_mb": request_max_mb,
+        }),)
+
+
 class ZFMultimodalLLM:
     DESCRIPTION = (
-        "面向现有 RH LLM 反推工作流的独立实现：支持 8 路图片、1 路视频、1 路音频、自定义 API 和双文本输出。"
+        "保留旧8图/1视频/1音频接口；新增视频帧批直连和多素材包，自动跳过空素材。"
     )
     RETURN_TYPES = ("STRING", "STRING")
     RETURN_NAMES = ("response", "raw_response")
@@ -1081,11 +1234,14 @@ class ZFMultimodalLLM:
                 "video": ("VIDEO",),
                 "api_config": ("ZF_MULTIMODAL_API_CONFIG",),
                 "audio": ("AUDIO",),
+                "media_bundle": ("ZF_MULTIMODAL_MEDIA_BUNDLE",),
+                "video_frames": ("IMAGE",),
+                "video_fps": ("FLOAT", {"default": 24.0, "min": 1.0, "max": 120.0}),
             },
         }
 
     def _error_result(self, error: Exception):
-        message = f"[ERROR] ZFMultimodalLLM：{error}"
+        message = f"[ERROR] ZFMultimodalLLM：{_redact_text(str(error))}"
         raw = json.dumps({"error": _redact_text(str(error))}, ensure_ascii=False, indent=2)
         return {"ui": {"text": [message, raw]}, "result": (message, raw)}
 
@@ -1113,37 +1269,60 @@ class ZFMultimodalLLM:
         video=None,
         api_config=None,
         audio=None,
+        media_bundle=None,
+        video_frames=None,
+        video_fps=24.0,
     ):
+        request_secrets = ()
         try:
             config = _normalize_config(api_config)
             model = (model or "").strip()
             if not model:
                 raise ValueError("model 不能为空。")
+            processor = _media_processor()
             images = [
                 image
                 for image in (image1, image2, image3, image4, image5, image6, image7, image8)
-                if image is not None
+                if not processor.is_absent(image)
             ]
-            image_media, video_media, audio_media, media_note = _prepare_media(
-                config["api_protocol"],
-                images,
-                video,
-                config["video_mode"],
-                config["video_max_seconds"],
-                config["video_max_mb"],
-                config["video_sample_frames"],
-                audio,
-                config["audio_max_seconds"],
-                config["audio_max_mb"],
-            )
+            video = None if processor.is_absent(video) else video
+            audio = None if processor.is_absent(audio) else audio
+            video_frames = None if processor.is_absent(video_frames) else video_frames
+            if media_bundle is not None:
+                if images or video is not None or video_frames is not None or audio is not None:
+                    raise ValueError("media_bundle 与传统媒体输入不能同时使用；请保留素材包或单独接口中的一种。")
+                image_media, video_media, audio_media, media_note = processor.prepare_bundle(media_bundle, config, globals())
+            elif video_frames is not None:
+                if video is not None:
+                    raise ValueError("video 与 video_frames 同时有素材；请选择 VIDEO 或帧批中的一种。")
+                bundle = processor.legacy_frames_bundle(images, video_frames, video_fps, audio)
+                image_media, video_media, audio_media, media_note = processor.prepare_bundle(bundle, config, globals())
+            else:
+                # Preserve legacy preparation/labels for existing workflows.
+                selected_audio = None if config["audio_mode"] == "ignore" else audio
+                image_media, video_media, audio_media, media_note = _prepare_media(
+                    config["api_protocol"], images, video, config["video_mode"],
+                    config["video_max_seconds"], config["video_max_mb"], config["video_sample_frames"],
+                    selected_audio, config["audio_max_seconds"], config["audio_max_mb"],
+                )
+                if audio is not None and config["audio_mode"] == "ignore":
+                    media_note += "\n<Audio 1> was explicitly ignored by audio_mode=ignore; it was NOT heard."
             effective_prompt = prompt or ""
             if media_note:
                 effective_prompt = f"{effective_prompt}\n\n[Media note: {media_note}]"
+            effective_role = role or ""
+            if config.get("provider") == "runninghub":
+                effective_role += (
+                    "\nActual API media boundary: independent AUDIO inputs are not sent in RH mode. "
+                    "Do not claim to have heard those tracks. Video samples are visual evidence only; "
+                    "routing metadata alone is not evidence of sound, dialogue, lyrics or music. "
+                    "A native video's sound is not verified by this adapter; do not claim audio understanding without evidence."
+                )
 
             url, headers, payload = _build_request(
                 config,
                 model,
-                role or "",
+                effective_role,
                 effective_prompt,
                 image_media,
                 video_media,
@@ -1156,23 +1335,35 @@ class ZFMultimodalLLM:
                 reasoning_effort,
                 seed,
             )
+            request_secrets = _header_secrets(headers)
+            payload_bytes = len(json.dumps(payload, ensure_ascii=True).encode("utf-8"))
+            if payload_bytes > config["request_max_mb"] * 1024 * 1024:
+                raise ValueError(f"JSON请求超过 request_max_mb={config['request_max_mb']}MB；请减少素材或按服务商限制调整。")
             log.info(
                 "ZF multimodal API request: protocol=%s model=%s images=%d video=%s audio=%s endpoint=%s",
                 config["api_protocol"],
                 model,
                 len(image_media),
-                video_media is not None,
-                audio_media is not None,
+                bool(video_media),
+                bool(audio_media),
                 url,
             )
-            data = _post_json(url, headers, payload, config["timeout"])
-            text = _clean_text(_response_text(config["api_protocol"], data))
+            if config.get("provider") == "runninghub":
+                data = _post_json(url, headers, payload, config["timeout"], allow_redirects=False)
+            else:
+                data = _post_json(url, headers, payload, config["timeout"])
+            text = _redact_text(_clean_text(_response_text(config["api_protocol"], data)), request_secrets)
             if not text:
                 raise RuntimeError("API 返回了空文本。")
-            raw = _safe_raw_response(data)
+            raw = _safe_raw_response(data, request_secrets)
             return {"ui": {"text": [text, raw]}, "result": (text, raw)}
         except Exception as error:
+            safe_error = _redact_text(str(error), request_secrets)
             if skip_error:
-                log.error("ZFMultimodalLLM failed: %s", _redact_text(str(error)))
-                return self._error_result(error)
+                log.error("ZFMultimodalLLM failed: %s", safe_error)
+                return self._error_result(RuntimeError(safe_error))
+            if request_secrets:
+                if isinstance(error, ValueError):
+                    raise ValueError(safe_error) from None
+                raise RuntimeError(safe_error) from None
             raise
